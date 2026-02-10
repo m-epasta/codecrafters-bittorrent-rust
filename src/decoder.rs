@@ -12,9 +12,9 @@ pub fn decode_bencoded_value(encoded_value: &str) -> serde_json::Value {
             .unwrap_or(format!("failed to decode string {}", encoded_value));
         Value::String(decoded_value)
     } else if encoded_value.starts_with("i") {
-        if let Some(end) = encoded_value.find("e") {
-            let int_str = &encoded_value[1..end];
-            let num = int_str.parse::<u64>().unwrap();
+        if let Some(end_index) = encoded_value.find("e") {
+            let int_str = &encoded_value[1..end_index];
+            let num = int_str.parse::<i64>().unwrap();
             Value::Number(num.into())
         } else {
             panic!("Invalid integer format; Usage: i<base 10 integer>e")
