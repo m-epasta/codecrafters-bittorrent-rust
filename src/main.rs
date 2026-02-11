@@ -10,7 +10,7 @@ fn main() {
 
     if command == "decode" {
         let encoded_value = &args[2];
-        let decoded_value = decoder::decode_bencoded_value(encoded_value);
+        let (decoded_value, _) = decoder::decode_bencoded_value(encoded_value);
         printer::printer(command, decoded_value);
     } else {
         println!("unknown command: {}", args[1])
