@@ -1,4 +1,4 @@
-use serde_json::{self, Value};
+use serde_json::{self, Map, Value};
 
 pub fn decode_bencoded_value(encoded_value: &str) -> (serde_json::Value, usize) {
     if encoded_value.chars().next().unwrap().is_ascii_digit() {
@@ -10,6 +10,8 @@ pub fn decode_bencoded_value(encoded_value: &str) -> (serde_json::Value, usize) 
         decode_integer(encoded_value)
     } else if encoded_value.starts_with("l") {
         decode_list(encoded_value)
+    } else if encoded_value.starts_with("d") {
+        decode_dict(encoded_value)
     } else {
         panic!("Unhandled encoded value: {}", encoded_value)
     }
@@ -41,10 +43,33 @@ fn decode_list(encoded_value: &str) -> (Value, usize) {
         if encoded_value.as_bytes()[idx] == b'e' {
             break;
         }
+
         let (decoded_value, consumed) = decode_bencoded_value(&encoded_value[idx..]);
         l.push(decoded_value);
         idx += consumed;
     }
 
     (Value::Array(l), idx + 1) // +1 so we consume the trailing `e`
+}
+
+fn decode_dict(encoded_value: &str) -> (Value, usize) {
+    let mut dict = Map::new();
+    let mut idx: usize = 1;
+
+    while idx < encoded_value.len() {
+        if encoded_value.as_bytes()[idx] == b'e' {
+            idx += 1;
+            break;
+        }
+
+        let (k, c) = decode_string(&encoded_value[idx..]);
+        idx += c;
+        let k_str = k.as_str().unwrap();
+
+        let (v, consumed) = decode_bencoded_value(&encoded_value[idx..]);
+        dict.insert(k_str.to_string(), v);
+        idx += consumed;
+    }
+
+    (Value::Object(dict), idx)
 }
