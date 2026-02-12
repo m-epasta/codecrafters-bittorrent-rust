@@ -50,4 +50,8 @@ impl Torrent {
         hash.copy_from_slice(&result);
         hash
     }
+
+    pub fn pieces_hash(&self) -> Vec<String> {
+        self.info.pieces.chunks_exact(20).map(hex::encode).collect()
+    }
 }

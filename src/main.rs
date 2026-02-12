@@ -41,11 +41,11 @@ async fn main() -> anyhow::Result<()> {
                 println!("Length: {}", length);
             }
             println!("Info Hash: {}", hex::encode(info_hash));
-            // println!("Piece Length: {}", t.info.piece_length);
-            // println!("Piece Hashes:");
-            // for hash in t.piece_hashes() {
-            //     println!("{}", hash);
-            // }
+            println!("Piece Length: {}", t.info.piece_length);
+            println!("Piece Hashes:");
+            for hash in t.piece_hashes() {
+                println!("{}", hash);
+            }
         } // Commands::Peers { torrent } => {
           //     let t = Torrent::from_file(torrent)?;
           //     let peers = t.peers().await?;
