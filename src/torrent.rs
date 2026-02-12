@@ -51,7 +51,7 @@ impl Torrent {
         hash
     }
 
-    pub fn pieces_hash(&self) -> Vec<String> {
+    pub fn piece_hash(&self) -> Vec<String> {
         self.info.pieces.chunks_exact(20).map(hex::encode).collect()
     }
 }
