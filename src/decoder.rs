@@ -73,3 +73,7 @@ fn decode_dict(encoded_value: &str) -> (Value, usize) {
 
     (Value::Object(dict), idx)
 }
+
+pub fn decode(bytes: &[u8]) -> Result<Bencode, serde_bencode::Error> {
+    serde_bencode::from_bytes(bytes)
+}
