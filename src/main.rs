@@ -3,7 +3,6 @@ use torrent::Torrent;
 
 mod beencode;
 mod decoder;
-mod printer;
 mod torrent;
 
 #[derive(Parser)]
@@ -35,13 +34,13 @@ async fn main() -> anyhow::Result<()> {
         }
         Commands::Info { torrent } => {
             let t = Torrent::from_file(torrent)?;
-            // let info_hash = t.info_hash();
+            let info_hash = t.info_hash();
 
             println!("Tracker URL: {}", t.announce);
             if let torrent::Keys::SingleFile { length } = t.info.keys {
                 println!("Length: {}", length);
             }
-            // println!("Info Hash: {}", hex::encode(info_hash));
+            println!("Info Hash: {}", hex::encode(info_hash));
             // println!("Piece Length: {}", t.info.piece_length);
             // println!("Piece Hashes:");
             // for hash in t.piece_hashes() {

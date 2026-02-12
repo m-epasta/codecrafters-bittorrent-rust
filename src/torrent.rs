@@ -1,5 +1,6 @@
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
+use sha1::{Digest, Sha1};
 use std::{fs, path::Path};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -37,5 +38,16 @@ impl Torrent {
         let torrent: Torrent =
             serde_bencode::from_bytes(&content).context("Failed to decode bencode")?;
         Ok(torrent)
+    }
+
+    pub fn info_hash(&self) -> [u8; 20] {
+        let info_encoded = serde_bencode::to_bytes(&self.info).expect("Failed to encode section");
+
+        let mut hasher = Sha1::new();
+        hasher.update(info_encoded);
+        let result = hasher.finalize();
+        let mut hash = [0u8; 20];
+        hash.copy_from_slice(&result);
+        hash
     }
 }
