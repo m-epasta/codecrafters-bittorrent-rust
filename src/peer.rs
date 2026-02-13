@@ -1,3 +1,4 @@
+#[repr(C)]
 pub struct Handshake {
     pub length: u8,
     pub bittorrent: [u8; 19],
