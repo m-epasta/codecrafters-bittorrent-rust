@@ -33,6 +33,12 @@ enum Commands {
         torrent: String,
         piece: u32,
     },
+    /// Download the whole file
+    Download {
+        #[arg(short)]
+        output: String,
+        torrent: String,
+    },
 }
 
 #[tokio::main]
@@ -104,6 +110,11 @@ async fn main() -> anyhow::Result<()> {
             }
 
             std::fs::write(output, piece_data).context("failed to write piece to file")?;
+        }
+        Commands::Download { output, torrent } => {
+            crate::download::download_all(torrent, output)
+                .await
+                .context("failed to download file")?;
         }
     }
 

@@ -1,7 +1,10 @@
 use crate::Torrent;
 use crate::peer::{Handshake, PeerMessage};
 use anyhow::Context;
+use std::collections::VecDeque;
+use std::sync::Arc;
 use tokio::net::TcpStream;
+use tokio::sync::{Mutex, mpsc};
 
 pub async fn download_piece(
     torrent_path: String,
@@ -9,33 +12,41 @@ pub async fn download_piece(
     piece_index: u32,
 ) -> anyhow::Result<Vec<u8>> {
     let t = Torrent::from_file(torrent_path)?;
+    download_piece_from_peer(&t, &mut tcp_peer, piece_index).await
+}
 
+async fn download_piece_from_peer(
+    t: &Torrent,
+    tcp_peer: &mut TcpStream,
+    piece_index: u32,
+) -> anyhow::Result<Vec<u8>> {
     // 1. Handshake
     let handshake = Handshake::new(t.info_hash(), rand::random::<[u8; 20]>());
-    handshake.write_to(&mut tcp_peer).await?;
-    let _response = Handshake::read_from(&mut tcp_peer).await?;
+    handshake.write_to(&mut *tcp_peer).await?;
+    let _response = Handshake::read_from(&mut *tcp_peer).await?;
 
     // 2. Wait for Bitfield
-    let msg = PeerMessage::read_from(&mut tcp_peer)
-        .await?
-        .context("expected bitfield")?;
-    match msg {
-        PeerMessage::Bitfield(_) => {}
-        _ => anyhow::bail!("Expected bitfield message, got {:?}", msg),
+    loop {
+        let msg = PeerMessage::read_from(&mut *tcp_peer)
+            .await?
+            .context("expected bitfield")?;
+        match msg {
+            PeerMessage::Bitfield(_) => break,
+            _ => continue,
+        }
     }
 
     // 3. Send Interested
-    PeerMessage::Interested.write_to(&mut tcp_peer).await?;
+    PeerMessage::Interested.write_to(&mut *tcp_peer).await?;
 
     // 4. Wait for Unchoke
     loop {
-        let msg = PeerMessage::read_from(&mut tcp_peer)
+        let msg = PeerMessage::read_from(&mut *tcp_peer)
             .await?
             .context("expected unchoke")?;
         match msg {
             PeerMessage::Unchoke => break,
-            PeerMessage::Bitfield(_) => continue, // Ignore extra bitfields
-            _ => continue,                        // Ignore other messages like Have
+            _ => continue,
         }
     }
 
@@ -47,7 +58,7 @@ pub async fn download_piece(
 
     let mut requested_blocks = 0;
     let mut received_blocks = 0;
-    const MAX_PENDING: usize = 5;
+    const MAX_PENDING: usize = 20; // Enterprise-grade pipelining
 
     while received_blocks < num_blocks {
         // Fill the pipeline
@@ -66,14 +77,14 @@ pub async fn download_piece(
                 begin,
                 length,
             }
-            .write_to(&mut tcp_peer)
+            .write_to(&mut *tcp_peer)
             .await?;
 
             requested_blocks += 1;
         }
 
         // Receive Piece (or handle other messages)
-        let msg = PeerMessage::read_from(&mut tcp_peer)
+        let msg = PeerMessage::read_from(&mut *tcp_peer)
             .await?
             .context("connection closed during download")?;
 
@@ -91,12 +102,111 @@ pub async fn download_piece(
                 received_blocks += 1;
             }
             PeerMessage::Choke => anyhow::bail!("Peer choked us during download"),
-            PeerMessage::Unchoke => continue, // Already unchoked, but ignore redundant unchokes
-            _ => continue,                    // Ignore other messages like Have, Bitfield
+            PeerMessage::Unchoke => continue,
+            _ => continue,
         }
     }
 
     Ok(piece_data)
+}
+
+pub async fn download_all(torrent_path: String, output_path: String) -> anyhow::Result<()> {
+    let t = Arc::new(Torrent::from_file(&torrent_path)?);
+    let peers = t.peers().await?;
+    let num_pieces = t.info.pieces.len() / 20;
+
+    // A shared piece queue for workers to pull from
+    let piece_indices: VecDeque<u32> = (0..num_pieces as u32).collect();
+    let piece_receiver = Arc::new(Mutex::new(piece_indices));
+
+    // Channel for workers to send results back
+    let (result_tx, mut result_rx) = mpsc::channel::<(u32, Vec<u8>)>(num_pieces as usize);
+
+    let mut tasks = Vec::new();
+
+    // Spawn workers (one per peer)
+    for peer_addr in peers {
+        let t_clone = Arc::clone(&t);
+        let piece_receiver_clone = Arc::clone(&piece_receiver);
+        let result_tx_clone = result_tx.clone();
+
+        let task = tokio::spawn(async move {
+            let mut tcp_peer =
+                match TcpStream::connect(format!("{}:{}", peer_addr.ip, peer_addr.port)).await {
+                    Ok(stream) => stream,
+                    Err(e) => {
+                        eprintln!("Failed to connect to peer {}: {}", peer_addr.ip, e);
+                        return;
+                    }
+                };
+
+            loop {
+                // Steal a piece to download
+                let piece_idx = {
+                    let mut pieces = piece_receiver_clone.lock().await;
+                    pieces.pop_front()
+                };
+
+                let piece_idx = match piece_idx {
+                    Some(idx) => idx,
+                    None => break, // No more pieces left
+                };
+
+                match download_piece_from_peer(&t_clone, &mut tcp_peer, piece_idx).await {
+                    Ok(data) => {
+                        if result_tx_clone.send((piece_idx, data)).await.is_err() {
+                            break;
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!(
+                            "Worker error downloading piece {} from {}: {}",
+                            piece_idx, peer_addr.ip, e
+                        );
+                        // Re-queue the failed piece
+                        let mut pieces = piece_receiver_clone.lock().await;
+                        pieces.push_back(piece_idx);
+
+                        // If we hit an error, this peer might be bad.
+                        // Let's break to let this worker task die and maybe spawn another if needed,
+                        // but for this simple implementation, breaking is safer.
+                        break;
+                    }
+                }
+            }
+        });
+        tasks.push(task);
+    }
+
+    drop(result_tx); // Important so result_rx.recv() returns None when all workers finish
+
+    let mut pieces_data = vec![None; num_pieces as usize];
+    let mut received_count = 0;
+
+    while let Some((idx, data)) = result_rx.recv().await {
+        pieces_data[idx as usize] = Some(data);
+        received_count += 1;
+        if received_count == num_pieces {
+            break;
+        }
+    }
+
+    if received_count < num_pieces {
+        anyhow::bail!(
+            "Failed to download all pieces: expected {}, got {}",
+            num_pieces,
+            received_count
+        );
+    }
+
+    let mut file_data = Vec::with_capacity(t.length() as usize);
+    for piece in pieces_data {
+        file_data.extend(piece.unwrap());
+    }
+
+    tokio::fs::write(output_path, file_data).await?;
+
+    Ok(())
 }
 
 #[cfg(test)]
