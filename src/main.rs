@@ -1,14 +1,10 @@
 use anyhow::Context;
 use clap::{Parser, Subcommand};
-use std::net::SocketAddrV4;
-use tokio::io::AsyncReadExt;
-use tokio::io::AsyncWriteExt;
 use torrent::Torrent;
-
-use crate::peer::Handshake;
 
 mod beencode;
 mod decoder;
+mod download;
 mod peer;
 mod torrent;
 
@@ -29,6 +25,13 @@ enum Commands {
     Peers { torrent: String },
     /// Establish a handshake via a tcp conn
     Handshake { torrent: String, peer: String },
+    /// Download a piece
+    DownloadPiece {
+        #[arg(short)]
+        output: String,
+        torrent: String,
+        piece: u32,
+    },
 }
 
 #[tokio::main]
@@ -64,29 +67,42 @@ async fn main() -> anyhow::Result<()> {
             }
         }
         Commands::Handshake { torrent, peer } => {
-            let t = Torrent::from_file(torrent)?;
-            let info_hash = t.info_hash();
-            let peer = peer.parse::<SocketAddrV4>().context("parse peer address")?;
-            let mut peer = tokio::net::TcpStream::connect(peer)
+            let tcp_peer = tokio::net::TcpStream::connect(peer)
                 .await
                 .context("connect to peer")?;
-            let mut handshake = Handshake::new(info_hash, *b"00112233445566778899");
-            {
-                let handshake_bytes =
-                    &mut handshake as *mut Handshake as *mut [u8; std::mem::size_of::<Handshake>()];
-                // Safety: Handshake is a POD with repr(c)
-                let handshake_bytes: &mut [u8; std::mem::size_of::<Handshake>()] =
-                    unsafe { &mut *handshake_bytes };
-                peer.write_all(handshake_bytes)
-                    .await
-                    .context("write handshake")?;
-                peer.read_exact(handshake_bytes)
-                    .await
-                    .context("read handshake")?;
+            crate::peer::handshake(torrent, tcp_peer)
+                .await
+                .context("failed handshake")?;
+        }
+        Commands::DownloadPiece {
+            output,
+            torrent,
+            piece,
+        } => {
+            let t = Torrent::from_file(&torrent)?;
+            let peers = t.peers().await?;
+            let peer = peers.first().context("no peers found")?;
+
+            let tcp_peer = tokio::net::TcpStream::connect(format!("{}:{}", peer.ip, peer.port))
+                .await
+                .context("connect to peer")?;
+
+            let piece_data = crate::download::download_piece(torrent, tcp_peer, piece)
+                .await
+                .context("failed to download piece")?;
+
+            // Verify hash
+            let hash = t.piece_hashes()[piece as usize].clone();
+            let mut hasher = sha1::Sha1::new();
+            use sha1::Digest;
+            hasher.update(&piece_data);
+            let result = hex::encode(hasher.finalize());
+
+            if result != hash {
+                anyhow::bail!("piece hash mismatch");
             }
-            assert_eq!(handshake.length, 19);
-            assert_eq!(&handshake.bittorrent, b"BitTorrent protocol");
-            println!("Peer ID: {}", hex::encode(&handshake.peer_id));
+
+            std::fs::write(output, piece_data).context("failed to write piece to file")?;
         }
     }
 

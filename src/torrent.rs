@@ -40,7 +40,7 @@ pub struct Peer {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct TrackerResponse {
-    pub interval: u64,
+    pub _interval: u64,
     pub peers: serde_bytes::ByteBuf,
 }
 
@@ -71,6 +71,18 @@ impl Torrent {
         match &self.info.keys {
             Keys::SingleFile { length } => *length,
             Keys::MultiFile { files } => files.iter().map(|f| f.length).sum(),
+        }
+    }
+
+    pub fn piece_length(&self, piece_index: u32) -> u64 {
+        let total_length = self.length();
+        let piece_length = self.info.piece_length;
+        let num_pieces = (total_length + piece_length - 1) / piece_length;
+
+        if piece_index as u64 == num_pieces - 1 {
+            total_length % piece_length
+        } else {
+            piece_length
         }
     }
 
@@ -112,5 +124,71 @@ impl Torrent {
             .collect();
 
         Ok(peers)
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_bytes::ByteBuf;
+
+    #[test]
+    fn test_torrent_length_single_file() {
+        let torrent = Torrent {
+            announce: "http://tracker.com".to_string(),
+            info: Info {
+                name: "test".to_string(),
+                piece_length: 256,
+                pieces: ByteBuf::from(vec![0; 20]),
+                keys: Keys::SingleFile { length: 1024 },
+            },
+        };
+        assert_eq!(torrent.length(), 1024);
+    }
+
+    #[test]
+    fn test_torrent_length_multi_file() {
+        let torrent = Torrent {
+            announce: "http://tracker.com".to_string(),
+            info: Info {
+                name: "test".to_string(),
+                piece_length: 256,
+                pieces: ByteBuf::from(vec![0; 20]),
+                keys: Keys::MultiFile {
+                    files: vec![
+                        File {
+                            length: 512,
+                            path: vec!["file1".to_string()],
+                        },
+                        File {
+                            length: 512,
+                            path: vec!["file2".to_string()],
+                        },
+                    ],
+                },
+            },
+        };
+        assert_eq!(torrent.length(), 1024);
+    }
+
+    #[test]
+    fn test_torrent_piece_hashes() {
+        let mut pieces = vec![0u8; 40];
+        pieces[0..20].copy_from_slice(&[1u8; 20]);
+        pieces[20..40].copy_from_slice(&[2u8; 20]);
+
+        let torrent = Torrent {
+            announce: "http://tracker.com".to_string(),
+            info: Info {
+                name: "test".to_string(),
+                piece_length: 256,
+                pieces: ByteBuf::from(pieces),
+                keys: Keys::SingleFile { length: 1024 },
+            },
+        };
+
+        let hashes = torrent.piece_hashes();
+        assert_eq!(hashes.len(), 2);
+        assert_eq!(hashes[0], hex::encode(&[1u8; 20]));
+        assert_eq!(hashes[1], hex::encode(&[2u8; 20]));
     }
 }
