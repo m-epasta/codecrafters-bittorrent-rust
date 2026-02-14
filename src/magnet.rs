@@ -36,7 +36,7 @@ impl Magnet {
             .append_pair("port", "6081")
             .append_pair("uploaded", "0")
             .append_pair("downloaded", "0")
-            .append_pair("left", "0") // Magnet links often don't have length until metadata is fetched
+            .append_pair("left", "999") // Non-zero value required by some trackers to return peers
             .append_pair("compact", "1")
             .finish();
 
