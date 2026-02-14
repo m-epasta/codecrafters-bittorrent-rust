@@ -28,13 +28,11 @@ impl Handshake {
     where
         W: AsyncWriteExt + Unpin,
     {
-        let bytes = unsafe {
-            std::slice::from_raw_parts(
-                self as *const Self as *const u8,
-                std::mem::size_of::<Self>(),
-            )
-        };
-        stream.write_all(bytes).await?;
+        stream.write_all(&[self.length]).await?;
+        stream.write_all(&self.bittorrent).await?;
+        stream.write_all(&self.reserved).await?;
+        stream.write_all(&self.info_hash).await?;
+        stream.write_all(&self.peer_id).await?;
         Ok(())
     }
 
@@ -42,10 +40,24 @@ impl Handshake {
     where
         R: AsyncReadExt + Unpin,
     {
-        let mut bytes = [0u8; std::mem::size_of::<Self>()];
-        stream.read_exact(&mut bytes).await?;
+        let mut length = [0u8; 1];
+        stream.read_exact(&mut length).await?;
+        let mut bittorrent = [0u8; 19];
+        stream.read_exact(&mut bittorrent).await?;
+        let mut reserved = [0u8; 8];
+        stream.read_exact(&mut reserved).await?;
+        let mut info_hash = [0u8; 20];
+        stream.read_exact(&mut info_hash).await?;
+        let mut peer_id = [0u8; 20];
+        stream.read_exact(&mut peer_id).await?;
 
-        Ok(unsafe { std::ptr::read(bytes.as_ptr() as *const Self) })
+        Ok(Self {
+            length: length[0],
+            bittorrent,
+            reserved,
+            info_hash,
+            peer_id,
+        })
     }
 }
 

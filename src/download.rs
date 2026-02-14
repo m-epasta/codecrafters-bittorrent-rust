@@ -26,14 +26,10 @@ async fn download_piece_from_peer(
     handshake.write_to(&mut *tcp_peer).await?;
     let _response = Handshake::read_from(&mut *tcp_peer).await?;
 
-    // 2. Wait for Bitfield (optional)
-    // Some peers send bitfield right after handshake, some don't.
-    // We'll just wait for Unchoke.
-
-    // 3. Send Interested
+    // 2. Send Interested
     PeerMessage::Interested.write_to(&mut *tcp_peer).await?;
 
-    // 4. Wait for Unchoke
+    // 3. Wait for Unchoke
     loop {
         let msg = timeout(
             Duration::from_secs(10),
@@ -42,14 +38,14 @@ async fn download_piece_from_peer(
         .await
         .context("unchoke read timed out")?
         .context("unchoke read error")?
-        .ok_or_else(|| anyhow::anyhow!("connection closed while waiting for unchoke"))?;
+        .ok_or_else(|| anyhow::anyhow!("connection closed"))?;
         match msg {
             PeerMessage::Unchoke => break,
             _ => continue,
         }
     }
 
-    // 5. Request blocks (Pipelined)
+    // 4. Request blocks (Pipelined)
     let piece_length = t.piece_length(piece_index) as u32;
     let block_size = 16 * 1024;
     let num_blocks = (piece_length + block_size - 1) / block_size;
@@ -57,7 +53,7 @@ async fn download_piece_from_peer(
 
     let mut requested_blocks = 0;
     let mut received_blocks = 0;
-    const MAX_PENDING: usize = 5; // Standard pipelining for stability
+    const MAX_PENDING: usize = 10;
 
     while received_blocks < num_blocks {
         // Fill the pipeline
@@ -65,11 +61,7 @@ async fn download_piece_from_peer(
             && (requested_blocks - received_blocks) < MAX_PENDING as u32
         {
             let begin = requested_blocks * block_size;
-            let length = if requested_blocks == num_blocks - 1 {
-                piece_length - begin
-            } else {
-                block_size
-            };
+            let length = (piece_length - begin).min(block_size);
 
             PeerMessage::Request {
                 index: piece_index,
@@ -101,7 +93,7 @@ async fn download_piece_from_peer(
                 block,
             } => {
                 if index != piece_index {
-                    anyhow::bail!("wrong piece index");
+                    continue;
                 }
                 piece_data[begin as usize..(begin + block.len() as u32) as usize]
                     .copy_from_slice(&block);
@@ -124,8 +116,8 @@ pub async fn download_all(torrent_path: String, output_path: String) -> anyhow::
     let piece_queue = Arc::new(Mutex::new(piece_indices));
     let (result_tx, mut result_rx) = mpsc::channel::<(u32, Vec<u8>)>(num_pieces);
 
-    // Use a small number of stable workers
-    let num_workers = peers.len().min(3);
+    // Use a larger pool of workers for "the best" performance
+    let num_workers = peers.len().min(20);
     for i in 0..num_workers {
         let peer_addr = peers[i].clone();
         let t_clone = Arc::clone(&t);
@@ -161,9 +153,10 @@ pub async fn download_all(torrent_path: String, output_path: String) -> anyhow::
                         }
                     }
                     Err(_) => {
+                        // Re-queue the piece on error
                         let mut q = queue_clone.lock().await;
                         q.push_back(piece_idx);
-                        break;
+                        break; // This peer failed, worker dies
                     }
                 }
             }
@@ -175,15 +168,21 @@ pub async fn download_all(torrent_path: String, output_path: String) -> anyhow::
     let mut received = 0;
 
     while let Some((idx, data)) = result_rx.recv().await {
-        pieces_data[idx as usize] = Some(data);
-        received += 1;
+        if pieces_data[idx as usize].is_none() {
+            pieces_data[idx as usize] = Some(data);
+            received += 1;
+        }
         if received == num_pieces {
             break;
         }
     }
 
     if received < num_pieces {
-        anyhow::bail!("download failed");
+        anyhow::bail!(
+            "download failed: expected {}, received {}",
+            num_pieces,
+            received
+        );
     }
 
     let mut file_data = Vec::new();
