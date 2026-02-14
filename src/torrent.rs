@@ -40,7 +40,7 @@ pub struct Peer {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct TrackerResponse {
-    pub interval: u64,
+    pub interval: Option<u64>,
     pub peers: serde_bytes::ByteBuf,
 }
 
@@ -90,17 +90,20 @@ impl Torrent {
         let mut url = reqwest::Url::parse(&self.announce).context("parse announce url")?;
         let info_hash = self.info_hash();
 
+        let peer_id = rand::random::<[u8; 20]>();
         let url = url
             .query_pairs_mut()
             .encoding_override(Some(&|input: &str| {
-                if input == "placeholder" {
+                if input == "info_hash_placeholder" {
                     Cow::Owned(info_hash.to_vec())
+                } else if input == "peer_id_placeholder" {
+                    Cow::Owned(peer_id.to_vec())
                 } else {
                     Cow::Borrowed(input.as_bytes())
                 }
             }))
-            .append_pair("info_hash", "placeholder")
-            .append_pair("peer_id", &hex::encode(rand::random::<[u8; 20]>()))
+            .append_pair("info_hash", "info_hash_placeholder")
+            .append_pair("peer_id", "peer_id_placeholder")
             .append_pair("port", "6081")
             .append_pair("uploaded", "0")
             .append_pair("downloaded", "0")
