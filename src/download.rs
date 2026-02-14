@@ -26,32 +26,25 @@ async fn download_piece_from_peer(
     handshake.write_to(&mut *tcp_peer).await?;
     let _response = Handshake::read_from(&mut *tcp_peer).await?;
 
-    // 2. Wait for Bitfield
-    loop {
-        let msg = PeerMessage::read_from(&mut *tcp_peer)
-            .await?
-            .context("expected bitfield")?;
-        match msg {
-            PeerMessage::Bitfield(_) => break,
-            PeerMessage::KeepAlive
-            | PeerMessage::Unchoke
-            | PeerMessage::Interested
-            | PeerMessage::Choke => continue,
-            _ => break, // Some peers might skip bitfield or send Have
-        }
-    }
+    // 2. Wait for Bitfield (optional)
+    // Some peers send bitfield right after handshake, some don't.
+    // We'll just wait for Unchoke.
 
     // 3. Send Interested
     PeerMessage::Interested.write_to(&mut *tcp_peer).await?;
 
     // 4. Wait for Unchoke
     loop {
-        let msg = PeerMessage::read_from(&mut *tcp_peer)
-            .await?
-            .context("expected unchoke")?;
+        let msg = timeout(
+            Duration::from_secs(10),
+            PeerMessage::read_from(&mut *tcp_peer),
+        )
+        .await
+        .context("unchoke read timed out")?
+        .context("unchoke read error")?
+        .ok_or_else(|| anyhow::anyhow!("connection closed while waiting for unchoke"))?;
         match msg {
             PeerMessage::Unchoke => break,
-            PeerMessage::KeepAlive => continue,
             _ => continue,
         }
     }
@@ -64,8 +57,7 @@ async fn download_piece_from_peer(
 
     let mut requested_blocks = 0;
     let mut received_blocks = 0;
-    const MAX_PENDING: usize = 10; // Safer pipelining
-    // NOTE: Should make this const configurable
+    const MAX_PENDING: usize = 5; // Standard pipelining for stability
 
     while received_blocks < num_blocks {
         // Fill the pipeline
@@ -90,14 +82,17 @@ async fn download_piece_from_peer(
             requested_blocks += 1;
         }
 
-        // Receive Piece (or handle other messages) with a timeout to avoid hanging
-        let msg = timeout(
-            Duration::from_secs(5),
+        // Receive Piece
+        let msg_res = timeout(
+            Duration::from_secs(10),
             PeerMessage::read_from(&mut *tcp_peer),
         )
-        .await
-        .context("read timed out")??
-        .context("connection closed during download")?;
+        .await;
+        let msg = match msg_res {
+            Ok(Ok(Some(m))) => m,
+            Ok(Ok(None)) => anyhow::bail!("connection closed"),
+            _ => anyhow::bail!("read error or timeout"),
+        };
 
         match msg {
             PeerMessage::Piece {
@@ -106,15 +101,13 @@ async fn download_piece_from_peer(
                 block,
             } => {
                 if index != piece_index {
-                    anyhow::bail!("received block for wrong piece: {}", index);
+                    anyhow::bail!("wrong piece index");
                 }
                 piece_data[begin as usize..(begin + block.len() as u32) as usize]
                     .copy_from_slice(&block);
                 received_blocks += 1;
             }
-            PeerMessage::KeepAlive | PeerMessage::Have(_) => continue,
-            PeerMessage::Choke => anyhow::bail!("Peer choked us during download"),
-            PeerMessage::Unchoke => continue,
+            PeerMessage::Choke => anyhow::bail!("choked"),
             _ => continue,
         }
     }
@@ -129,33 +122,31 @@ pub async fn download_all(torrent_path: String, output_path: String) -> anyhow::
 
     let piece_indices: VecDeque<u32> = (0..num_pieces as u32).collect();
     let piece_queue = Arc::new(Mutex::new(piece_indices));
-    let (result_tx, mut result_rx) = mpsc::channel::<(u32, Vec<u8>)>(num_pieces as usize);
+    let (result_tx, mut result_rx) = mpsc::channel::<(u32, Vec<u8>)>(num_pieces);
 
-    // Use a moderate number of workers to balance speed and stability
-    let num_workers = peers.len().min(8);
-    let mut tasks = Vec::new();
-
+    // Use a small number of stable workers
+    let num_workers = peers.len().min(3);
     for i in 0..num_workers {
         let peer_addr = peers[i].clone();
         let t_clone = Arc::clone(&t);
-        let piece_queue_clone = Arc::clone(&piece_queue);
-        let result_tx_clone = result_tx.clone();
+        let queue_clone = Arc::clone(&piece_queue);
+        let tx_clone = result_tx.clone();
 
-        let task = tokio::spawn(async move {
+        tokio::spawn(async move {
             let mut tcp_peer = match timeout(
                 Duration::from_secs(5),
                 TcpStream::connect(format!("{}:{}", peer_addr.ip, peer_addr.port)),
             )
             .await
             {
-                Ok(Ok(stream)) => stream,
+                Ok(Ok(s)) => s,
                 _ => return,
             };
 
             loop {
                 let piece_idx = {
-                    let mut queue = piece_queue_clone.lock().await;
-                    queue.pop_front()
+                    let mut q = queue_clone.lock().await;
+                    q.pop_front()
                 };
 
                 let piece_idx = match piece_idx {
@@ -163,56 +154,42 @@ pub async fn download_all(torrent_path: String, output_path: String) -> anyhow::
                     None => break,
                 };
 
-                // Add a timeout per piece download to avoid hanging on a single slow piece
-                match timeout(
-                    Duration::from_secs(15),
-                    download_piece_from_peer(&t_clone, &mut tcp_peer, piece_idx),
-                )
-                .await
-                {
-                    Ok(Ok(data)) => {
-                        if result_tx_clone.send((piece_idx, data)).await.is_err() {
+                match download_piece_from_peer(&t_clone, &mut tcp_peer, piece_idx).await {
+                    Ok(data) => {
+                        if tx_clone.send((piece_idx, data)).await.is_err() {
                             break;
                         }
                     }
-                    _ => {
-                        // On error or timeout, re-queue and rotate to another peer if possible
-                        let mut queue = piece_queue_clone.lock().await;
-                        queue.push_back(piece_idx);
-                        break; // This worker dies, peer might be bad
+                    Err(_) => {
+                        let mut q = queue_clone.lock().await;
+                        q.push_back(piece_idx);
+                        break;
                     }
                 }
             }
         });
-        tasks.push(task);
     }
-
     drop(result_tx);
 
-    let mut pieces_data = vec![None; num_pieces as usize];
-    let mut received_count = 0;
+    let mut pieces_data = vec![None; num_pieces];
+    let mut received = 0;
 
-    // Collect results with an overall timeout
-    let download_result: Result<(), anyhow::Error> = timeout(Duration::from_secs(18), async {
-        while let Some((idx, data)) = result_rx.recv().await {
-            pieces_data[idx as usize] = Some(data);
-            received_count += 1;
-            if received_count == num_pieces {
-                return Ok(());
-            }
+    while let Some((idx, data)) = result_rx.recv().await {
+        pieces_data[idx as usize] = Some(data);
+        received += 1;
+        if received == num_pieces {
+            break;
         }
-        anyhow::bail!("Worker channel closed prematurely")
-    })
-    .await
-    .map_err(|_| anyhow::anyhow!("Overall download timed out"))?;
-
-    download_result?;
-
-    let mut file_data = Vec::with_capacity(t.length() as usize);
-    for piece in pieces_data {
-        file_data.extend(piece.expect("piece missing after success"));
     }
 
+    if received < num_pieces {
+        anyhow::bail!("download failed");
+    }
+
+    let mut file_data = Vec::new();
+    for p in pieces_data {
+        file_data.extend(p.unwrap());
+    }
     tokio::fs::write(output_path, file_data).await?;
 
     Ok(())
