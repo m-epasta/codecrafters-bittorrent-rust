@@ -142,6 +142,16 @@ async fn main() -> anyhow::Result<()> {
             handshake.write_to(&mut tcp_peer).await?;
 
             let response = crate::peer::Handshake::read_from(&mut tcp_peer).await?;
+            assert_eq!(response.length, 19, "Invalid handshake length");
+            assert_eq!(
+                &response.bittorrent, b"BitTorrent protocol",
+                "Invalid protocol string"
+            );
+            assert_eq!(
+                response.info_hash, m.info_hash,
+                "Info hash mismatch from peer"
+            );
+
             println!("Peer ID: {}", hex::encode(response.peer_id));
         }
     }

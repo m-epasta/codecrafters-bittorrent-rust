@@ -86,8 +86,38 @@ pub fn parse_magnet_link(link: &str) -> Result<Magnet> {
         return Err(anyhow!("empty hash or announce"));
     }
 
+    let info_hash = hash.unwrap();
+    assert_eq!(
+        info_hash.len(),
+        20,
+        "Info hash must be exactly 20 bytes (this should be caught by try_into but extra safety)"
+    );
+
     Ok(Magnet {
-        info_hash: hash.unwrap(),
+        info_hash,
         announce: announce.unwrap(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_magnet_link() {
+        let link = "magnet:?xt=urn:btih:ad21d9af0b0014e2163b2f293b48232921021703&dn=test.txt&tr=http%3A%2F%2Ftracker.com%2Fannounce";
+        let magnet = parse_magnet_link(link).unwrap();
+
+        assert_eq!(magnet.announce, "http://tracker.com/announce");
+        assert_eq!(
+            hex::encode(magnet.info_hash),
+            "ad21d9af0b0014e2163b2f293b48232921021703"
+        );
+    }
+
+    #[test]
+    fn test_parse_magnet_link_invalid() {
+        let link = "magnet:?xt=urn:btih:invalid&tr=http%3A%2F%2Ftracker.com%2Fannounce";
+        assert!(parse_magnet_link(link).is_err());
+    }
 }

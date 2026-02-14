@@ -65,6 +65,11 @@ impl Torrent {
     }
 
     pub fn piece_hashes(&self) -> Vec<String> {
+        assert_eq!(
+            self.info.pieces.len() % 20,
+            0,
+            "Pieces length must be a multiple of 20"
+        );
         self.info.pieces.chunks_exact(20).map(hex::encode).collect()
     }
 
@@ -121,6 +126,11 @@ impl Torrent {
         let tracker_response: TrackerResponse =
             serde_bencode::from_bytes(&bytes).context("decode tracker response")?;
 
+        assert_eq!(
+            tracker_response.peers.len() % 6,
+            0,
+            "Peers data length must be a multiple of 6"
+        );
         let peers = tracker_response
             .peers
             .chunks_exact(6)

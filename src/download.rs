@@ -54,6 +54,14 @@ where
         piece_index: u32,
     ) -> anyhow::Result<Vec<u8>> {
         let piece_length = t.piece_length(piece_index) as u32;
+        let num_pieces = (t.info.pieces.len() / 20) as u32;
+        assert!(
+            piece_index < num_pieces,
+            "Piece index {} out of bounds (max {})",
+            piece_index,
+            num_pieces - 1
+        );
+
         let block_size = 16 * 1024;
         let num_blocks = (piece_length + block_size - 1) / block_size;
         let mut piece_data = vec![0u8; piece_length as usize];
@@ -102,6 +110,10 @@ where
                     if index != piece_index {
                         continue;
                     }
+                    assert!(
+                        begin + block.len() as u32 <= piece_length,
+                        "Block data exceeds piece length boundary"
+                    );
                     piece_data[begin as usize..(begin + block.len() as u32) as usize]
                         .copy_from_slice(&block);
                     received_blocks += 1;

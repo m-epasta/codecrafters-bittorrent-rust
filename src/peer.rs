@@ -56,6 +56,12 @@ impl Handshake {
         let mut peer_id = [0u8; 20];
         stream.read_exact(&mut peer_id).await?;
 
+        assert_eq!(length[0], 19, "Invalid handshake protocol length");
+        assert_eq!(
+            &bittorrent, b"BitTorrent protocol",
+            "Invalid handshake protocol string"
+        );
+
         Ok(Self {
             length: length[0],
             bittorrent,
