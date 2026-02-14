@@ -24,6 +24,11 @@ impl Handshake {
         }
     }
 
+    pub fn with_extension(mut self) -> Self {
+        self.reserved[5] = 0x10;
+        self
+    }
+
     pub async fn write_to<W>(&self, mut stream: W) -> Result<()>
     where
         W: AsyncWriteExt + Unpin,

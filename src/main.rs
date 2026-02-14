@@ -44,6 +44,8 @@ enum Commands {
     },
     #[command(name = "magnet_parse")]
     MagnetParse { link: String },
+    #[command(name = "magnet_handshake")]
+    MagnetHandshake { link: String },
 }
 
 #[tokio::main]
@@ -125,7 +127,23 @@ async fn main() -> anyhow::Result<()> {
                 .await
                 .context("failed to download file")?;
         }
-        Commands::MagnetParse { link } => magnet::Magnet::execute(&link)?,
+        Commands::MagnetParse { link } => magnet::Magnet::info(&link)?,
+        Commands::MagnetHandshake { link } => {
+            let m = magnet::parse_magnet_link(&link)?;
+            let peers = m.peers().await?;
+            let peer = peers.first().context("no peers found")?;
+
+            let mut tcp_peer = tokio::net::TcpStream::connect(format!("{}:{}", peer.ip, peer.port))
+                .await
+                .context("connect to peer")?;
+
+            let handshake = crate::peer::Handshake::new(m.info_hash, rand::random::<[u8; 20]>())
+                .with_extension();
+            handshake.write_to(&mut tcp_peer).await?;
+
+            let response = crate::peer::Handshake::read_from(&mut tcp_peer).await?;
+            println!("Peer ID: {}", hex::encode(response.peer_id));
+        }
     }
 
     Ok(())
