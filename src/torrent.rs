@@ -78,9 +78,13 @@ impl Torrent {
         let total_length = self.length();
         let piece_length = self.info.piece_length;
         let num_pieces = (total_length + piece_length - 1) / piece_length;
-
         if piece_index as u64 == num_pieces - 1 {
-            total_length % piece_length
+            let last_length = total_length % piece_length;
+            if last_length == 0 {
+                piece_length
+            } else {
+                last_length
+            }
         } else {
             piece_length
         }
