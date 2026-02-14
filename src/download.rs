@@ -125,7 +125,11 @@ pub async fn download_piece(
     session.download_piece(&t, piece_index).await
 }
 
-pub async fn download_all(torrent_path: String, output_path: String) -> anyhow::Result<()> {
+pub async fn download_all(
+    torrent_path: String,
+    output_path: String,
+    num_workers: Option<usize>,
+) -> anyhow::Result<()> {
     let t = Arc::new(Torrent::from_file(&torrent_path)?);
     let peers = t.peers().await?;
     let num_pieces = t.info.pieces.len() / 20;
@@ -135,8 +139,8 @@ pub async fn download_all(torrent_path: String, output_path: String) -> anyhow::
     let (result_tx, mut result_rx) = mpsc::channel::<(u32, Vec<u8>)>(num_pieces);
 
     // Use a larger pool of workers for "the best" performance
-    let num_workers = peers.len().min(5); // Throttle a bit to avoid overwhelming
-    for i in 0..num_workers {
+    let workers_to_spawn = num_workers.unwrap_or(5).min(peers.len());
+    for i in 0..workers_to_spawn {
         let peer_addr = peers[i % peers.len()].clone();
         let t_clone = Arc::clone(&t);
         let queue_clone = Arc::clone(&piece_queue);

@@ -5,6 +5,7 @@ use torrent::Torrent;
 mod beencode;
 mod decoder;
 mod download;
+mod magnet;
 mod peer;
 mod torrent;
 
@@ -38,7 +39,11 @@ enum Commands {
         #[arg(short)]
         output: String,
         torrent: String,
+        #[arg(short, long)]
+        workers: Option<usize>,
     },
+    #[command(name = "magnet_parse")]
+    MagnetParse { link: String },
 }
 
 #[tokio::main]
@@ -111,11 +116,16 @@ async fn main() -> anyhow::Result<()> {
 
             std::fs::write(output, piece_data).context("failed to write piece to file")?;
         }
-        Commands::Download { output, torrent } => {
-            crate::download::download_all(torrent, output)
+        Commands::Download {
+            output,
+            torrent,
+            workers,
+        } => {
+            crate::download::download_all(torrent, output, workers)
                 .await
                 .context("failed to download file")?;
         }
+        Commands::MagnetParse { link } => magnet::Magnet::execute(&link)?,
     }
 
     Ok(())
