@@ -75,6 +75,7 @@ const ID_PIECE: u8 = 7;
 
 #[derive(Debug, PartialEq)]
 pub enum PeerMessage {
+    KeepAlive,
     Choke,
     Unchoke,
     Interested,
@@ -90,7 +91,6 @@ pub enum PeerMessage {
         begin: u32,
         block: Vec<u8>,
     },
-    KeepAlive, // Special case: no message ID, just length 0
 }
 
 #[allow(dead_code)]
@@ -98,6 +98,7 @@ impl PeerMessage {
     /// Get the message ID for this message (None for KeepAlive)
     pub fn id(&self) -> Option<u8> {
         match self {
+            PeerMessage::KeepAlive => None,
             PeerMessage::Choke => Some(ID_CHOKE),
             PeerMessage::Unchoke => Some(ID_UNCHOKE),
             PeerMessage::Interested => Some(ID_INTERESTED),
@@ -105,7 +106,6 @@ impl PeerMessage {
             PeerMessage::Bitfield(_data) => Some(ID_BITFIELD),
             PeerMessage::Request { .. } => Some(ID_REQUEST),
             PeerMessage::Piece { .. } => Some(ID_PIECE),
-            PeerMessage::KeepAlive => None,
         }
     }
 
@@ -115,7 +115,6 @@ impl PeerMessage {
     {
         match self {
             PeerMessage::KeepAlive => {
-                // Just send length 0
                 stream.write_all(&0u32.to_be_bytes()).await?;
             }
 
@@ -185,7 +184,6 @@ impl PeerMessage {
             return Ok(Some(PeerMessage::KeepAlive));
         }
 
-        // Read message ID
         let mut id_buf = [0u8; 1];
         stream.read_exact(&mut id_buf).await?;
 

@@ -5,6 +5,7 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 use tokio::net::TcpStream;
 use tokio::sync::{Mutex, mpsc};
+use tokio::time::{Duration, timeout};
 
 pub async fn download_piece(
     torrent_path: String,
@@ -32,8 +33,11 @@ async fn download_piece_from_peer(
             .context("expected bitfield")?;
         match msg {
             PeerMessage::Bitfield(_) => break,
-            PeerMessage::Unchoke | PeerMessage::Interested | PeerMessage::Choke => continue,
-            _ => break, // Some peers might skip bitfield if they have everything or nothing
+            PeerMessage::KeepAlive
+            | PeerMessage::Unchoke
+            | PeerMessage::Interested
+            | PeerMessage::Choke => continue,
+            _ => break, // Some peers might skip bitfield or send Have
         }
     }
 
@@ -47,6 +51,7 @@ async fn download_piece_from_peer(
             .context("expected unchoke")?;
         match msg {
             PeerMessage::Unchoke => break,
+            PeerMessage::KeepAlive => continue,
             _ => continue,
         }
     }
@@ -85,10 +90,14 @@ async fn download_piece_from_peer(
             requested_blocks += 1;
         }
 
-        // Receive Piece (or handle other messages)
-        let msg = PeerMessage::read_from(&mut *tcp_peer)
-            .await?
-            .context("connection closed during download")?;
+        // Receive Piece (or handle other messages) with a timeout to avoid hanging
+        let msg = timeout(
+            Duration::from_secs(5),
+            PeerMessage::read_from(&mut *tcp_peer),
+        )
+        .await
+        .context("read timed out")??
+        .context("connection closed during download")?;
 
         match msg {
             PeerMessage::Piece {
@@ -103,7 +112,7 @@ async fn download_piece_from_peer(
                     .copy_from_slice(&block);
                 received_blocks += 1;
             }
-            PeerMessage::Have(_) => continue,
+            PeerMessage::KeepAlive | PeerMessage::Have(_) => continue,
             PeerMessage::Choke => anyhow::bail!("Peer choked us during download"),
             PeerMessage::Unchoke => continue,
             _ => continue,
@@ -132,14 +141,15 @@ pub async fn download_all(torrent_path: String, output_path: String) -> anyhow::
         let result_tx_clone = result_tx.clone();
 
         let task = tokio::spawn(async move {
-            let mut tcp_peer =
-                match TcpStream::connect(format!("{}:{}", peer_addr.ip, peer_addr.port)).await {
-                    Ok(stream) => stream,
-                    Err(e) => {
-                        eprintln!("Worker {} failed to connect to {}: {}", i, peer_addr.ip, e);
-                        return;
-                    }
-                };
+            let mut tcp_peer = match timeout(
+                Duration::from_secs(3),
+                TcpStream::connect(format!("{}:{}", peer_addr.ip, peer_addr.port)),
+            )
+            .await
+            {
+                Ok(Ok(stream)) => stream,
+                _ => return, // Connection failed or timed out
+            };
 
             loop {
                 let piece_idx = {
