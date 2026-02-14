@@ -131,10 +131,11 @@ pub async fn download_all(torrent_path: String, output_path: String) -> anyhow::
     let piece_queue = Arc::new(Mutex::new(piece_indices));
     let (result_tx, mut result_rx) = mpsc::channel::<(u32, Vec<u8>)>(num_pieces as usize);
 
-    // Use all available peers to maximize throughput and reliability
+    // Use a moderate number of workers to balance speed and stability
+    let num_workers = peers.len().min(8);
     let mut tasks = Vec::new();
 
-    for i in 0..peers.len() {
+    for i in 0..num_workers {
         let peer_addr = peers[i].clone();
         let t_clone = Arc::clone(&t);
         let piece_queue_clone = Arc::clone(&piece_queue);
@@ -142,13 +143,13 @@ pub async fn download_all(torrent_path: String, output_path: String) -> anyhow::
 
         let task = tokio::spawn(async move {
             let mut tcp_peer = match timeout(
-                Duration::from_secs(3),
+                Duration::from_secs(5),
                 TcpStream::connect(format!("{}:{}", peer_addr.ip, peer_addr.port)),
             )
             .await
             {
                 Ok(Ok(stream)) => stream,
-                _ => return, // Connection failed or timed out
+                _ => return,
             };
 
             loop {
@@ -162,17 +163,23 @@ pub async fn download_all(torrent_path: String, output_path: String) -> anyhow::
                     None => break,
                 };
 
-                match download_piece_from_peer(&t_clone, &mut tcp_peer, piece_idx).await {
-                    Ok(data) => {
+                // Add a timeout per piece download to avoid hanging on a single slow piece
+                match timeout(
+                    Duration::from_secs(15),
+                    download_piece_from_peer(&t_clone, &mut tcp_peer, piece_idx),
+                )
+                .await
+                {
+                    Ok(Ok(data)) => {
                         if result_tx_clone.send((piece_idx, data)).await.is_err() {
                             break;
                         }
                     }
-                    Err(e) => {
-                        eprintln!("Worker {} error on piece {}: {}", i, piece_idx, e);
+                    _ => {
+                        // On error or timeout, re-queue and rotate to another peer if possible
                         let mut queue = piece_queue_clone.lock().await;
                         queue.push_back(piece_idx);
-                        break;
+                        break; // This worker dies, peer might be bad
                     }
                 }
             }
@@ -185,25 +192,25 @@ pub async fn download_all(torrent_path: String, output_path: String) -> anyhow::
     let mut pieces_data = vec![None; num_pieces as usize];
     let mut received_count = 0;
 
-    while let Some((idx, data)) = result_rx.recv().await {
-        pieces_data[idx as usize] = Some(data);
-        received_count += 1;
-        if received_count == num_pieces {
-            break;
+    // Collect results with an overall timeout
+    let download_result: Result<(), anyhow::Error> = timeout(Duration::from_secs(18), async {
+        while let Some((idx, data)) = result_rx.recv().await {
+            pieces_data[idx as usize] = Some(data);
+            received_count += 1;
+            if received_count == num_pieces {
+                return Ok(());
+            }
         }
-    }
+        anyhow::bail!("Worker channel closed prematurely")
+    })
+    .await
+    .map_err(|_| anyhow::anyhow!("Overall download timed out"))?;
 
-    if received_count < num_pieces {
-        anyhow::bail!(
-            "Download failed: requested {}, received {}",
-            num_pieces,
-            received_count
-        );
-    }
+    download_result?;
 
     let mut file_data = Vec::with_capacity(t.length() as usize);
     for piece in pieces_data {
-        file_data.extend(piece.expect("piece missing after successful count"));
+        file_data.extend(piece.expect("piece missing after success"));
     }
 
     tokio::fs::write(output_path, file_data).await?;
