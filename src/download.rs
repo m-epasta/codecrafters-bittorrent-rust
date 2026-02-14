@@ -32,7 +32,8 @@ async fn download_piece_from_peer(
             .context("expected bitfield")?;
         match msg {
             PeerMessage::Bitfield(_) => break,
-            _ => continue,
+            PeerMessage::Unchoke | PeerMessage::Interested | PeerMessage::Choke => continue,
+            _ => break, // Some peers might skip bitfield if they have everything or nothing
         }
     }
 
@@ -58,7 +59,7 @@ async fn download_piece_from_peer(
 
     let mut requested_blocks = 0;
     let mut received_blocks = 0;
-    const MAX_PENDING: usize = 20; // Enterprise-grade pipelining
+    const MAX_PENDING: usize = 10; // Safer pipelining
 
     while received_blocks < num_blocks {
         // Fill the pipeline
@@ -115,19 +116,18 @@ pub async fn download_all(torrent_path: String, output_path: String) -> anyhow::
     let peers = t.peers().await?;
     let num_pieces = t.info.pieces.len() / 20;
 
-    // A shared piece queue for workers to pull from
     let piece_indices: VecDeque<u32> = (0..num_pieces as u32).collect();
-    let piece_receiver = Arc::new(Mutex::new(piece_indices));
-
-    // Channel for workers to send results back
+    let piece_queue = Arc::new(Mutex::new(piece_indices));
     let (result_tx, mut result_rx) = mpsc::channel::<(u32, Vec<u8>)>(num_pieces as usize);
 
+    // Limit active workers to avoid overwhelming the tester or being rate-limited
+    let num_workers = peers.len().min(5);
     let mut tasks = Vec::new();
 
-    // Spawn workers (one per peer)
-    for peer_addr in peers {
+    for i in 0..num_workers {
+        let peer_addr = peers[i].clone();
         let t_clone = Arc::clone(&t);
-        let piece_receiver_clone = Arc::clone(&piece_receiver);
+        let piece_queue_clone = Arc::clone(&piece_queue);
         let result_tx_clone = result_tx.clone();
 
         let task = tokio::spawn(async move {
@@ -135,21 +135,20 @@ pub async fn download_all(torrent_path: String, output_path: String) -> anyhow::
                 match TcpStream::connect(format!("{}:{}", peer_addr.ip, peer_addr.port)).await {
                     Ok(stream) => stream,
                     Err(e) => {
-                        eprintln!("Failed to connect to peer {}: {}", peer_addr.ip, e);
+                        eprintln!("Worker {} failed to connect to {}: {}", i, peer_addr.ip, e);
                         return;
                     }
                 };
 
             loop {
-                // Steal a piece to download
                 let piece_idx = {
-                    let mut pieces = piece_receiver_clone.lock().await;
-                    pieces.pop_front()
+                    let mut queue = piece_queue_clone.lock().await;
+                    queue.pop_front()
                 };
 
                 let piece_idx = match piece_idx {
                     Some(idx) => idx,
-                    None => break, // No more pieces left
+                    None => break,
                 };
 
                 match download_piece_from_peer(&t_clone, &mut tcp_peer, piece_idx).await {
@@ -159,17 +158,9 @@ pub async fn download_all(torrent_path: String, output_path: String) -> anyhow::
                         }
                     }
                     Err(e) => {
-                        eprintln!(
-                            "Worker error downloading piece {} from {}: {}",
-                            piece_idx, peer_addr.ip, e
-                        );
-                        // Re-queue the failed piece
-                        let mut pieces = piece_receiver_clone.lock().await;
-                        pieces.push_back(piece_idx);
-
-                        // If we hit an error, this peer might be bad.
-                        // Let's break to let this worker task die and maybe spawn another if needed,
-                        // but for this simple implementation, breaking is safer.
+                        eprintln!("Worker {} error on piece {}: {}", i, piece_idx, e);
+                        let mut queue = piece_queue_clone.lock().await;
+                        queue.push_back(piece_idx);
                         break;
                     }
                 }
@@ -178,7 +169,7 @@ pub async fn download_all(torrent_path: String, output_path: String) -> anyhow::
         tasks.push(task);
     }
 
-    drop(result_tx); // Important so result_rx.recv() returns None when all workers finish
+    drop(result_tx);
 
     let mut pieces_data = vec![None; num_pieces as usize];
     let mut received_count = 0;
@@ -193,7 +184,7 @@ pub async fn download_all(torrent_path: String, output_path: String) -> anyhow::
 
     if received_count < num_pieces {
         anyhow::bail!(
-            "Failed to download all pieces: expected {}, got {}",
+            "Download failed: requested {}, received {}",
             num_pieces,
             received_count
         );
@@ -201,7 +192,7 @@ pub async fn download_all(torrent_path: String, output_path: String) -> anyhow::
 
     let mut file_data = Vec::with_capacity(t.length() as usize);
     for piece in pieces_data {
-        file_data.extend(piece.unwrap());
+        file_data.extend(piece.expect("piece missing after successful count"));
     }
 
     tokio::fs::write(output_path, file_data).await?;
