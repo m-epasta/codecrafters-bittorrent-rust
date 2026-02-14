@@ -26,6 +26,7 @@ enum Commands {
     /// Establish a handshake via a tcp conn
     Handshake { torrent: String, peer: String },
     /// Download a piece
+    #[command(name = "download_piece")]
     DownloadPiece {
         #[arg(short)]
         output: String,
