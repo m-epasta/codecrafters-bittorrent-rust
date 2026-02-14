@@ -1,5 +1,5 @@
-use crate::peer::{Handshake, PeerMessage};
 use crate::Torrent;
+use crate::peer::{Handshake, PeerMessage};
 use anyhow::Context;
 use tokio::net::TcpStream;
 
@@ -11,7 +11,7 @@ pub async fn download_piece(
     let t = Torrent::from_file(torrent_path)?;
 
     // 1. Handshake
-    let handshake = Handshake::new(t.info_hash(), *b"00112233445566778899");
+    let handshake = Handshake::new(t.info_hash(), rand::random::<[u8; 20]>());
     handshake.write_to(&mut tcp_peer).await?;
     let _response = Handshake::read_from(&mut tcp_peer).await?;
 
@@ -91,7 +91,7 @@ mod tests {
     async fn test_send_msg() {
         let (client, mut server) = duplex(1024);
         let msg = PeerMessage::Interested;
-        
+
         // Spawn a task to send the message
         tokio::spawn(async move {
             let _ = msg.write_to(client).await;

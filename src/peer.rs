@@ -52,7 +52,7 @@ impl Handshake {
 pub async fn handshake(torrent: String, mut tcp_peer: TcpStream) -> Result<()> {
     let t = Torrent::from_file(torrent)?;
 
-    let handshake = Handshake::new(t.info_hash(), *b"00112233445566778899");
+    let handshake = Handshake::new(t.info_hash(), rand::random::<[u8; 20]>());
     handshake.write_to(&mut tcp_peer).await?;
 
     let response = Handshake::read_from(&mut tcp_peer).await?;

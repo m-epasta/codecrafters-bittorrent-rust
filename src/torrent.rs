@@ -100,7 +100,7 @@ impl Torrent {
                 }
             }))
             .append_pair("info_hash", "placeholder")
-            .append_pair("peer_id", "00112233445566778899")
+            .append_pair("peer_id", &hex::encode(rand::random::<[u8; 20]>()))
             .append_pair("port", "6081")
             .append_pair("uploaded", "0")
             .append_pair("downloaded", "0")
