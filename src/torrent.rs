@@ -40,6 +40,7 @@ pub struct Peer {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct TrackerResponse {
+    #[allow(dead_code)]
     pub interval: Option<u64>,
     pub peers: serde_bytes::ByteBuf,
 }
