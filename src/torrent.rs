@@ -40,7 +40,7 @@ pub struct Peer {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct TrackerResponse {
-    pub _interval: u64,
+    pub interval: u64,
     pub peers: serde_bytes::ByteBuf,
 }
 
