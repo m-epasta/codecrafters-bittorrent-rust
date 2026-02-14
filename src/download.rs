@@ -39,43 +39,60 @@ pub async fn download_piece(
         }
     }
 
-    // 5. Request blocks
+    // 5. Request blocks (Pipelined)
     let piece_length = t.piece_length(piece_index) as u32;
     let block_size = 16 * 1024;
     let num_blocks = (piece_length + block_size - 1) / block_size;
     let mut piece_data = vec![0u8; piece_length as usize];
 
-    for i in 0..num_blocks {
-        let begin = i * block_size;
-        let length = if i == num_blocks - 1 {
-            piece_length - begin
-        } else {
-            block_size
-        };
+    let mut requested_blocks = 0;
+    let mut received_blocks = 0;
+    const MAX_PENDING: usize = 5;
 
-        PeerMessage::Request {
-            index: piece_index,
-            begin,
-            length,
+    while received_blocks < num_blocks {
+        // Fill the pipeline
+        while requested_blocks < num_blocks
+            && (requested_blocks - received_blocks) < MAX_PENDING as u32
+        {
+            let begin = requested_blocks * block_size;
+            let length = if requested_blocks == num_blocks - 1 {
+                piece_length - begin
+            } else {
+                block_size
+            };
+
+            PeerMessage::Request {
+                index: piece_index,
+                begin,
+                length,
+            }
+            .write_to(&mut tcp_peer)
+            .await?;
+
+            requested_blocks += 1;
         }
-        .write_to(&mut tcp_peer)
-        .await?;
 
-        // Receive Piece
+        // Receive Piece (or handle other messages)
         let msg = PeerMessage::read_from(&mut tcp_peer)
             .await?
-            .context("expected piece")?;
+            .context("connection closed during download")?;
+
         match msg {
             PeerMessage::Piece {
                 index,
-                begin: b,
+                begin,
                 block,
             } => {
-                assert_eq!(index, piece_index);
-                assert_eq!(b, begin);
-                piece_data[begin as usize..(begin + length) as usize].copy_from_slice(&block);
+                if index != piece_index {
+                    anyhow::bail!("received block for wrong piece: {}", index);
+                }
+                piece_data[begin as usize..(begin + block.len() as u32) as usize]
+                    .copy_from_slice(&block);
+                received_blocks += 1;
             }
-            _ => anyhow::bail!("Expected piece message, got {:?}", msg),
+            PeerMessage::Choke => anyhow::bail!("Peer choked us during download"),
+            PeerMessage::Unchoke => continue, // Already unchoked, but ignore redundant unchokes
+            _ => continue,                    // Ignore other messages like Have, Bitfield
         }
     }
 

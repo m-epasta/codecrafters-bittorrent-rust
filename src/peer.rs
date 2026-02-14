@@ -65,6 +65,7 @@ pub async fn handshake(torrent: String, mut tcp_peer: TcpStream) -> Result<()> {
 }
 
 // Message IDs as constants
+const ID_CHOKE: u8 = 0;
 const ID_UNCHOKE: u8 = 1;
 const ID_INTERESTED: u8 = 2;
 const ID_BITFIELD: u8 = 5;
@@ -73,6 +74,7 @@ const ID_PIECE: u8 = 7;
 
 #[derive(Debug, PartialEq)]
 pub enum PeerMessage {
+    Choke,
     Unchoke,
     Interested,
     Bitfield(Vec<u8>),
@@ -94,6 +96,7 @@ impl PeerMessage {
     /// Get the message ID for this message (None for KeepAlive)
     pub fn id(&self) -> Option<u8> {
         match self {
+            PeerMessage::Choke => Some(ID_CHOKE),
             PeerMessage::Unchoke => Some(ID_UNCHOKE),
             PeerMessage::Interested => Some(ID_INTERESTED),
             PeerMessage::Bitfield(_data) => Some(ID_BITFIELD),
@@ -113,7 +116,7 @@ impl PeerMessage {
                 stream.write_all(&0u32.to_be_bytes()).await?;
             }
 
-            PeerMessage::Unchoke | PeerMessage::Interested => {
+            PeerMessage::Choke | PeerMessage::Unchoke | PeerMessage::Interested => {
                 // Length = 1 (just the ID)
                 stream.write_all(&1u32.to_be_bytes()).await?; // length prefix
                 stream.write_all(&[self.id().unwrap()]).await?; // message ID
@@ -178,6 +181,7 @@ impl PeerMessage {
         stream.read_exact(&mut id_buf).await?;
 
         match id_buf[0] {
+            ID_CHOKE if length == 1 => Ok(Some(PeerMessage::Choke)),
             ID_UNCHOKE if length == 1 => Ok(Some(PeerMessage::Unchoke)),
             ID_INTERESTED if length == 1 => Ok(Some(PeerMessage::Interested)),
 
