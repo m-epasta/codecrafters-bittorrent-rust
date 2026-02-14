@@ -291,6 +291,15 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_handshake_extension_bit() {
+        let info_hash = [1u8; 20];
+        let peer_id = [2u8; 20];
+
+        let handshake = Handshake::new(info_hash, peer_id).with_extension();
+        assert_eq!(handshake.reserved[5], 0x10);
+    }
+
+    #[tokio::test]
     async fn test_peer_message_serialization() {
         let (mut client, mut server) = duplex(1024);
 
