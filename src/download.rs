@@ -60,6 +60,7 @@ async fn download_piece_from_peer(
     let mut requested_blocks = 0;
     let mut received_blocks = 0;
     const MAX_PENDING: usize = 10; // Safer pipelining
+    // NOTE: Should make this const configurable
 
     while received_blocks < num_blocks {
         // Fill the pipeline
@@ -102,6 +103,7 @@ async fn download_piece_from_peer(
                     .copy_from_slice(&block);
                 received_blocks += 1;
             }
+            PeerMessage::Have(_) => continue,
             PeerMessage::Choke => anyhow::bail!("Peer choked us during download"),
             PeerMessage::Unchoke => continue,
             _ => continue,
@@ -120,11 +122,10 @@ pub async fn download_all(torrent_path: String, output_path: String) -> anyhow::
     let piece_queue = Arc::new(Mutex::new(piece_indices));
     let (result_tx, mut result_rx) = mpsc::channel::<(u32, Vec<u8>)>(num_pieces as usize);
 
-    // Limit active workers to avoid overwhelming the tester or being rate-limited
-    let num_workers = peers.len().min(5);
+    // Use all available peers to maximize throughput and reliability
     let mut tasks = Vec::new();
 
-    for i in 0..num_workers {
+    for i in 0..peers.len() {
         let peer_addr = peers[i].clone();
         let t_clone = Arc::clone(&t);
         let piece_queue_clone = Arc::clone(&piece_queue);

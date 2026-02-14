@@ -68,6 +68,7 @@ pub async fn handshake(torrent: String, mut tcp_peer: TcpStream) -> Result<()> {
 const ID_CHOKE: u8 = 0;
 const ID_UNCHOKE: u8 = 1;
 const ID_INTERESTED: u8 = 2;
+const ID_HAVE: u8 = 4;
 const ID_BITFIELD: u8 = 5;
 const ID_REQUEST: u8 = 6;
 const ID_PIECE: u8 = 7;
@@ -77,6 +78,7 @@ pub enum PeerMessage {
     Choke,
     Unchoke,
     Interested,
+    Have(u32),
     Bitfield(Vec<u8>),
     Request {
         index: u32,
@@ -99,6 +101,7 @@ impl PeerMessage {
             PeerMessage::Choke => Some(ID_CHOKE),
             PeerMessage::Unchoke => Some(ID_UNCHOKE),
             PeerMessage::Interested => Some(ID_INTERESTED),
+            PeerMessage::Have(_) => Some(ID_HAVE),
             PeerMessage::Bitfield(_data) => Some(ID_BITFIELD),
             PeerMessage::Request { .. } => Some(ID_REQUEST),
             PeerMessage::Piece { .. } => Some(ID_PIECE),
@@ -120,6 +123,12 @@ impl PeerMessage {
                 // Length = 1 (just the ID)
                 stream.write_all(&1u32.to_be_bytes()).await?; // length prefix
                 stream.write_all(&[self.id().unwrap()]).await?; // message ID
+            }
+
+            PeerMessage::Have(index) => {
+                stream.write_all(&5u32.to_be_bytes()).await?;
+                stream.write_all(&[ID_HAVE]).await?;
+                stream.write_all(&index.to_be_bytes()).await?;
             }
 
             PeerMessage::Bitfield(data) => {
@@ -184,6 +193,13 @@ impl PeerMessage {
             ID_CHOKE if length == 1 => Ok(Some(PeerMessage::Choke)),
             ID_UNCHOKE if length == 1 => Ok(Some(PeerMessage::Unchoke)),
             ID_INTERESTED if length == 1 => Ok(Some(PeerMessage::Interested)),
+
+            ID_HAVE if length == 5 => {
+                let mut buf = [0u8; 4];
+                stream.read_exact(&mut buf).await?;
+                let index = u32::from_be_bytes(buf);
+                Ok(Some(PeerMessage::Have(index)))
+            }
 
             ID_BITFIELD => {
                 let mut data = vec![0u8; length - 1];
