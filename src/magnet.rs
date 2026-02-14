@@ -28,7 +28,7 @@ fn parse_magnet_link(link: &str) -> Result<Magnet> {
             Cow::Borrowed("tr") => announce = Some(v.to_string()),
             Cow::Borrowed("xt") => {
                 let h = v
-                    .strip_prefix("urn:bith:")
+                    .strip_prefix("urn:btih:")
                     .ok_or(anyhow!("invalid hash format"))?;
                 hash = Some(h.to_string());
             }
