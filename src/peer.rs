@@ -95,6 +95,7 @@ const ID_HAVE: u8 = 4;
 const ID_BITFIELD: u8 = 5;
 const ID_REQUEST: u8 = 6;
 const ID_PIECE: u8 = 7;
+const ID_EXTENDED: u8 = 20;
 
 #[derive(Debug, PartialEq)]
 pub enum PeerMessage {
@@ -114,6 +115,10 @@ pub enum PeerMessage {
         begin: u32,
         block: Vec<u8>,
     },
+    Extended {
+        extended_id: u8,
+        payload: Vec<u8>,
+    },
 }
 
 #[allow(dead_code)]
@@ -129,6 +134,7 @@ impl PeerMessage {
             PeerMessage::Bitfield(_data) => Some(ID_BITFIELD),
             PeerMessage::Request { .. } => Some(ID_REQUEST),
             PeerMessage::Piece { .. } => Some(ID_PIECE),
+            PeerMessage::Extended { .. } => Some(ID_EXTENDED),
         }
     }
 
@@ -186,6 +192,17 @@ impl PeerMessage {
                 stream.write_all(&index.to_be_bytes()).await?;
                 stream.write_all(&begin.to_be_bytes()).await?;
                 stream.write_all(block).await?;
+            }
+            PeerMessage::Extended {
+                extended_id,
+                payload,
+            } => {
+                // Length = 1 (message ID) + 1 (extende_id) + payload.len()
+                let len = 2 + payload.len();
+                stream.write_all(&(len as u32).to_be_bytes()).await?; // Length prefix
+                stream.write_all(&[ID_EXTENDED]).await?; // Message ID
+                stream.write_all(&[*extended_id]).await?; // Extended message ID
+                stream.write_all(payload).await?; // Payload
             }
         }
 
@@ -262,6 +279,31 @@ impl PeerMessage {
                     index,
                     begin,
                     block,
+                }))
+            }
+            ID_EXTENDED => {
+                // Read extended message (1 byte)
+                let mut ext_id_buf = [0u8; 1];
+                stream.read_exact(&mut ext_id_buf).await?;
+                let extended_id = ext_id_buf[0];
+
+                // Read the rest of the payload (beencoded data)
+                // Example:
+                // {
+                //  "m": {
+                //    "ut_metadata": 16,
+                //    ... (other extension names and IDs)
+                //  }
+                // }
+                let payload_len = length - 2;
+                let mut payload = vec![0u8; payload_len];
+                if payload_len > 0 {
+                    stream.read_exact(&mut payload).await?;
+                }
+
+                Ok(Some(PeerMessage::Extended {
+                    extended_id,
+                    payload,
                 }))
             }
 

@@ -1,6 +1,7 @@
 use anyhow::{Context, Result, anyhow};
 use reqwest::Url;
 use std::{borrow::Cow, net::Ipv4Addr};
+use tokio::net::TcpStream;
 
 pub struct Magnet {
     pub info_hash: [u8; 20],
@@ -97,6 +98,29 @@ pub fn parse_magnet_link(link: &str) -> Result<Magnet> {
         info_hash,
         announce: announce.unwrap(),
     })
+}
+
+pub async fn send_extension_handshake(stream: &mut TcpStream) -> Result<()> {
+    use std::collections::BTreeMap;
+
+    let mut m_dict = BTreeMap::new();
+    m_dict.insert("ut_metadata".to_string(), 16); // We'll use ID 16 for our metadata requests
+
+    let mut handshake_dict = BTreeMap::new();
+    handshake_dict.insert("m".to_string(), serde_bencode::to_string(&m_dict)?);
+
+    let payload = serde_bencode::to_bytes(&handshake_dict)?;
+
+    // Create an EXTENDED message (not a Handshake)
+    let ext_message = crate::PeerMessage::Extended {
+        extended_id: 0, // 0 = handshake
+        payload,
+    };
+
+    // Write using PeerMessage's write_to, not Handshake's write_to
+    ext_message.write_to(stream).await?;
+
+    Ok(())
 }
 
 #[cfg(test)]
