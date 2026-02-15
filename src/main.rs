@@ -48,6 +48,8 @@ enum Commands {
     MagnetParse { link: String },
     #[command(name = "magnet_handshake")]
     MagnetHandshake { link: String },
+    #[command(name = "magnet_info")]
+    MagnetInfo { link: String },
 }
 
 #[tokio::main]
@@ -198,6 +200,74 @@ async fn main() -> anyhow::Result<()> {
                     Some(PeerMessage::Have(_)) => {
                         // Ignore HAVE messages during handshake
                     }
+                    _ => anyhow::bail!("Unexpected PeerMessage. Got: {:?}", message),
+                }
+            }
+        }
+        Commands::MagnetInfo { link } => {
+            let m = magnet::parse_magnet_link(&link)?;
+            println!("Tracker URL: {}", m.announce);
+            println!("Info Hash: {}", hex::encode(m.info_hash));
+
+            let peers = m.peers().await?;
+            let peer = peers.first().context("no peers found")?;
+
+            let mut tcp_peer = tokio::net::TcpStream::connect(format!("{}:{}", peer.ip, peer.port))
+                .await
+                .context("connect to peer")?;
+
+            let handshake = crate::peer::Handshake::new(m.info_hash, rand::random::<[u8; 20]>())
+                .with_extension();
+            handshake.write_to(&mut tcp_peer).await?;
+
+            let response = crate::peer::Handshake::read_from(&mut tcp_peer).await?;
+            println!("Peer ID: {}", hex::encode(response.peer_id));
+
+            let supports_extensions = (response.reserved[5] & 0x10) != 0;
+            if !supports_extensions {
+                anyhow::bail!("Peer doesn't support extensions");
+            }
+
+            // Send extension handshake FIRST
+            magnet::send_extension_handshake(&mut tcp_peer).await?;
+
+            // Send an empty bitfield message
+            PeerMessage::Bitfield(vec![])
+                .write_to(&mut tcp_peer)
+                .await?;
+
+            loop {
+                let message = crate::peer::PeerMessage::read_from(&mut tcp_peer).await?;
+
+                match message {
+                    Some(PeerMessage::Bitfield(_)) => {}
+                    Some(PeerMessage::Extended {
+                        extended_id,
+                        payload,
+                    }) => {
+                        if extended_id == 0 {
+                            // Extension handshake
+                            let handshake_dict: serde_json::Value =
+                                serde_bencode::from_bytes(&payload)?;
+
+                            // Extract `ut_metadata`
+                            if let Some(m_dict) = handshake_dict.get("m") {
+                                if let Some(ut_id) = m_dict.get("ut_metadata") {
+                                    let ut_metadata_id = ut_id.as_i64().unwrap() as u8;
+
+                                    // Send metadata request
+                                    magnet::send_metadata_request(&mut tcp_peer, ut_metadata_id)
+                                        .await?;
+
+                                    // For this stage, we just need to send the request.
+                                    // The output will be verified in later stages.
+                                    // println!("Sent metadata request for piece 0");
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    Some(PeerMessage::Have(_)) => {}
                     _ => anyhow::bail!("Unexpected PeerMessage. Got: {:?}", message),
                 }
             }

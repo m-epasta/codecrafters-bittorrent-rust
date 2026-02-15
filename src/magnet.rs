@@ -124,6 +124,29 @@ pub async fn send_extension_handshake(stream: &mut TcpStream) -> Result<()> {
     Ok(())
 }
 
+#[derive(serde::Serialize)]
+struct MetadataRequest {
+    msg_type: u8,
+    piece: u32,
+}
+
+pub async fn send_metadata_request(stream: &mut TcpStream, extension_id: u8) -> Result<()> {
+    let request = MetadataRequest {
+        msg_type: 0, // request
+        piece: 0,
+    };
+    let payload = serde_bencode::to_bytes(&request)?;
+
+    let ext_message = crate::PeerMessage::Extended {
+        extended_id: extension_id,
+        payload,
+    };
+
+    ext_message.write_to(stream).await?;
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -150,6 +173,17 @@ mod tests {
 
         // Expected: d1:md11:ut_metadatai16eee
         assert_eq!(encoded, b"d1:md11:ut_metadatai16eee");
+    }
+
+    #[test]
+    fn test_metadata_request_serialization() {
+        let request = MetadataRequest {
+            msg_type: 0,
+            piece: 0,
+        };
+        let encoded = serde_bencode::to_bytes(&request).unwrap();
+        // Expected: d8:msg_typei0e5:piecei0ee
+        assert_eq!(encoded, b"d8:msg_typei0e5:piecei0ee");
     }
 
     #[test]
