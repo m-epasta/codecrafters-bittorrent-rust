@@ -161,6 +161,11 @@ async fn main() -> anyhow::Result<()> {
                 return Ok(());
             }
 
+            // Send an empty bitfield message
+            PeerMessage::Bitfield(vec![])
+                .write_to(&mut tcp_peer)
+                .await?;
+
             loop {
                 let message = crate::peer::PeerMessage::read_from(&mut tcp_peer).await?;
 
@@ -178,18 +183,18 @@ async fn main() -> anyhow::Result<()> {
                             let handshake_dict: serde_json::Value =
                                 serde_bencode::from_bytes(&payload)?;
 
-                            println!("Extension handshake: {:?}", handshake_dict);
-
                             // Extract `ut_metadata`
                             if let Some(m) = handshake_dict.get("m") {
                                 if let Some(ut_id) = m.get("ut_metadata") {
-                                    let _ut_metadata_id = ut_id.as_i64().unwrap() as u8;
-                                    // println!("Peer uses ut_metadata ID: {}", ut_metadata_id);
-
+                                    let ut_metadata_id = ut_id.as_i64().unwrap() as u8;
+                                    println!("Peer Metadata Extension ID: {}", ut_metadata_id);
                                     break;
                                 }
                             }
                         }
+                    }
+                    Some(PeerMessage::Have(_)) => {
+                        // Ignore HAVE messages during handshake
                     }
                     _ => anyhow::bail!("Unexpected PeerMessage. Got: {:?}", message),
                 }
