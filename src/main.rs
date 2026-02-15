@@ -185,14 +185,14 @@ async fn main() -> anyhow::Result<()> {
                         payload,
                     }) => {
                         if extended_id == 0 {
-                            // Extension handshake
-                            let handshake_dict: serde_json::Value =
-                                serde_bencode::from_bytes(&payload)?;
-
-                            // Extract `ut_metadata`
-                            if let Some(m) = handshake_dict.get("m") {
-                                if let Some(ut_id) = m.get("ut_metadata") {
-                                    let ut_metadata_id = ut_id.as_i64().unwrap() as u8;
+                            #[derive(serde::Deserialize)]
+                            struct ExtensionHandshake {
+                                m: std::collections::BTreeMap<String, u8>,
+                            }
+                            if let Ok(handshake) =
+                                serde_bencode::from_bytes::<ExtensionHandshake>(&payload)
+                            {
+                                if let Some(&ut_metadata_id) = handshake.m.get("ut_metadata") {
                                     println!("Peer Metadata Extension ID: {}", ut_metadata_id);
                                     break;
                                 }

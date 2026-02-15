@@ -152,10 +152,13 @@ pub async fn fetch_info(link: &str) -> Result<crate::torrent::Info> {
                 payload,
             }) => {
                 if extended_id == 0 {
-                    let handshake_dict: serde_json::Value = serde_bencode::from_bytes(&payload)?;
-                    if let Some(m_dict) = handshake_dict.get("m") {
-                        if let Some(ut_id) = m_dict.get("ut_metadata") {
-                            let ut_metadata_id = ut_id.as_i64().unwrap() as u8;
+                    #[derive(serde::Deserialize)]
+                    struct ExtensionHandshake {
+                        m: std::collections::BTreeMap<String, u8>,
+                    }
+                    if let Ok(handshake) = serde_bencode::from_bytes::<ExtensionHandshake>(&payload)
+                    {
+                        if let Some(&ut_metadata_id) = handshake.m.get("ut_metadata") {
                             send_metadata_request(&mut tcp_peer, ut_metadata_id).await?;
                         }
                     }
