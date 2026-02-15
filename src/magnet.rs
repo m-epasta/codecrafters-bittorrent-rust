@@ -100,16 +100,17 @@ pub fn parse_magnet_link(link: &str) -> Result<Magnet> {
     })
 }
 
-pub async fn send_extension_handshake(stream: &mut TcpStream) -> Result<()> {
-    use std::collections::BTreeMap;
+#[derive(serde::Serialize)]
+struct ExtensionHandshake {
+    m: std::collections::BTreeMap<String, u8>,
+}
 
-    let mut m_dict = BTreeMap::new();
+pub async fn send_extension_handshake(stream: &mut TcpStream) -> Result<()> {
+    let mut m_dict = std::collections::BTreeMap::new();
     m_dict.insert("ut_metadata".to_string(), 16); // We'll use ID 16 for our metadata requests
 
-    let mut handshake_dict = BTreeMap::new();
-    handshake_dict.insert("m".to_string(), serde_bencode::to_string(&m_dict)?);
-
-    let payload = serde_bencode::to_bytes(&handshake_dict)?;
+    let handshake = ExtensionHandshake { m: m_dict };
+    let payload = serde_bencode::to_bytes(&handshake)?;
 
     // Create an EXTENDED message (not a Handshake)
     let ext_message = crate::PeerMessage::Extended {
@@ -137,6 +138,18 @@ mod tests {
             hex::encode(magnet.info_hash),
             "ad21d9af0b0014e2163b2f293b48232921021703"
         );
+    }
+
+    #[test]
+    fn test_extension_handshake_serialization() {
+        let mut m_dict = std::collections::BTreeMap::new();
+        m_dict.insert("ut_metadata".to_string(), 16u8);
+
+        let handshake = ExtensionHandshake { m: m_dict };
+        let encoded = serde_bencode::to_bytes(&handshake).unwrap();
+
+        // Expected: d1:md11:ut_metadatai16eee
+        assert_eq!(encoded, b"d1:md11:ut_metadatai16eee");
     }
 
     #[test]

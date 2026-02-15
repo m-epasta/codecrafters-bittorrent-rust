@@ -165,7 +165,7 @@ async fn main() -> anyhow::Result<()> {
                 let message = crate::peer::PeerMessage::read_from(&mut tcp_peer).await?;
 
                 match message {
-                    Some(PeerMessage::Bitfield(pieces)) => {
+                    Some(PeerMessage::Bitfield(_pieces)) => {
                         // After receiving a bitfield, we send an extension hanshake
                         magnet::send_extension_handshake(&mut tcp_peer).await?;
                     }
@@ -183,7 +183,7 @@ async fn main() -> anyhow::Result<()> {
                             // Extract `ut_metadata`
                             if let Some(m) = handshake_dict.get("m") {
                                 if let Some(ut_id) = m.get("ut_metadata") {
-                                    let ut_metadata_id = ut_id.as_i64().unwrap() as u8;
+                                    let _ut_metadata_id = ut_id.as_i64().unwrap() as u8;
                                     // println!("Peer uses ut_metadata ID: {}", ut_metadata_id);
 
                                     break;
