@@ -166,17 +166,12 @@ async fn main() -> anyhow::Result<()> {
             // Send extension handshake FIRST (as per BEP 10 "as soon as possible")
             magnet::send_extension_handshake(&mut tcp_peer).await?;
 
-            // Send an empty bitfield message
-            PeerMessage::Bitfield(vec![])
-                .write_to(&mut tcp_peer)
-                .await?;
-
             loop {
                 let message = crate::peer::PeerMessage::read_from(&mut tcp_peer).await?;
 
                 match message {
                     Some(PeerMessage::Bitfield(_pieces)) => {
-                        // Already sent our extension handshake
+                        // Ignore bitfield
                     }
                     Some(PeerMessage::Extended {
                         extended_id,
@@ -231,11 +226,6 @@ async fn main() -> anyhow::Result<()> {
             // Send extension handshake FIRST
             magnet::send_extension_handshake(&mut tcp_peer).await?;
 
-            // Send an empty bitfield message
-            PeerMessage::Bitfield(vec![])
-                .write_to(&mut tcp_peer)
-                .await?;
-
             loop {
                 let message = crate::peer::PeerMessage::read_from(&mut tcp_peer).await?;
 
@@ -258,21 +248,77 @@ async fn main() -> anyhow::Result<()> {
                                     // Send metadata request
                                     magnet::send_metadata_request(&mut tcp_peer, ut_metadata_id)
                                         .await?;
-
-                                    // For this stage, we just need to send the request.
-                                    // The output will be verified in later stages.
-                                    // println!("Sent metadata request for piece 0");
-                                    break;
                                 }
+                            }
+                        } else {
+                            if let Some(split_idx) = find_bencode_dict_end(&payload) {
+                                let metadata_bytes = &payload[split_idx..];
+                                let info: torrent::Info =
+                                    serde_bencode::from_bytes(metadata_bytes)?;
+
+                                if let torrent::Keys::SingleFile { length } = info.keys {
+                                    println!("Length: {}", length);
+                                } else if let torrent::Keys::MultiFile { files } = info.keys {
+                                    let total_length: u64 = files.iter().map(|f| f.length).sum();
+                                    println!("Length: {}", total_length);
+                                }
+                                println!("Piece Length: {}", info.piece_length);
+                                println!("Piece Hashes:");
+                                for hash in info.pieces.chunks_exact(20).map(hex::encode) {
+                                    println!("{}", hash);
+                                }
+                                return Ok(());
                             }
                         }
                     }
                     Some(PeerMessage::Have(_)) => {}
-                    _ => anyhow::bail!("Unexpected PeerMessage. Got: {:?}", message),
+                    _ => {} // Ignore other messages
                 }
             }
         }
     }
 
     Ok(())
+}
+
+fn find_bencode_dict_end(bytes: &[u8]) -> Option<usize> {
+    let mut depth = 0;
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'd' | b'l' => {
+                depth += 1;
+                i += 1;
+            }
+            b'i' => {
+                i += 1;
+                while i < bytes.len() && bytes[i] != b'e' {
+                    i += 1;
+                }
+                i += 1;
+            }
+            b'e' => {
+                depth -= 1;
+                i += 1;
+                if depth == 0 {
+                    return Some(i);
+                }
+            }
+            b'0'..=b'9' => {
+                let mut len_str = String::new();
+                while i < bytes.len() && bytes[i] != b':' {
+                    len_str.push(bytes[i] as char);
+                    i += 1;
+                }
+                i += 1;
+                if let Ok(len) = len_str.parse::<usize>() {
+                    i += len;
+                } else {
+                    return None;
+                }
+            }
+            _ => return None,
+        }
+    }
+    None
 }
