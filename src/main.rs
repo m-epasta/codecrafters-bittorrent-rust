@@ -50,6 +50,13 @@ enum Commands {
     MagnetHandshake { link: String },
     #[command(name = "magnet_info")]
     MagnetInfo { link: String },
+    #[command(name = "magnet_download_piece")]
+    MagnetDownloadPiece {
+        #[arg(short)]
+        output: String,
+        link: String,
+        piece: u32,
+    },
 }
 
 #[tokio::main]
@@ -200,125 +207,50 @@ async fn main() -> anyhow::Result<()> {
             }
         }
         Commands::MagnetInfo { link } => {
+            let info = magnet::fetch_info(&link).await?;
             let m = magnet::parse_magnet_link(&link)?;
-            println!("Tracker URL: {}", m.announce);
-            println!("Info Hash: {}", hex::encode(m.info_hash));
 
-            let peers = m.peers().await?;
+            println!("Tracker URL: {}", m.announce);
+            if let torrent::Keys::SingleFile { length } = info.keys {
+                println!("Length: {}", length);
+            } else if let torrent::Keys::MultiFile { files } = info.keys {
+                let total_length: u64 = files.iter().map(|f| f.length).sum();
+                println!("Length: {}", total_length);
+            }
+            println!("Info Hash: {}", hex::encode(m.info_hash));
+            println!("Piece Length: {}", info.piece_length);
+            println!("Piece Hashes:");
+            for hash in info.pieces.chunks_exact(20).map(hex::encode) {
+                println!("{}", hash);
+            }
+        }
+        Commands::MagnetDownloadPiece {
+            output,
+            link,
+            piece,
+        } => {
+            let info = magnet::fetch_info(&link).await?;
+            let m = magnet::parse_magnet_link(&link)?;
+
+            let t = torrent::Torrent {
+                announce: m.announce.clone(),
+                info,
+            };
+
+            let peers = t.peers().await?;
             let peer = peers.first().context("no peers found")?;
 
-            let mut tcp_peer = tokio::net::TcpStream::connect(format!("{}:{}", peer.ip, peer.port))
+            let tcp_peer = tokio::net::TcpStream::connect(format!("{}:{}", peer.ip, peer.port))
                 .await
                 .context("connect to peer")?;
 
-            let handshake = crate::peer::Handshake::new(m.info_hash, rand::random::<[u8; 20]>())
-                .with_extension();
-            handshake.write_to(&mut tcp_peer).await?;
+            let piece_data = crate::download::download_piece_from_torrent(&t, tcp_peer, piece)
+                .await
+                .context("failed to download piece")?;
 
-            let response = crate::peer::Handshake::read_from(&mut tcp_peer).await?;
-            println!("Peer ID: {}", hex::encode(response.peer_id));
-
-            let supports_extensions = (response.reserved[5] & 0x10) != 0;
-            if !supports_extensions {
-                anyhow::bail!("Peer doesn't support extensions");
-            }
-
-            // Send extension handshake FIRST
-            magnet::send_extension_handshake(&mut tcp_peer).await?;
-
-            loop {
-                let message = crate::peer::PeerMessage::read_from(&mut tcp_peer).await?;
-
-                match message {
-                    Some(PeerMessage::Bitfield(_)) => {}
-                    Some(PeerMessage::Extended {
-                        extended_id,
-                        payload,
-                    }) => {
-                        if extended_id == 0 {
-                            // Extension handshake
-                            let handshake_dict: serde_json::Value =
-                                serde_bencode::from_bytes(&payload)?;
-
-                            // Extract `ut_metadata`
-                            if let Some(m_dict) = handshake_dict.get("m") {
-                                if let Some(ut_id) = m_dict.get("ut_metadata") {
-                                    let ut_metadata_id = ut_id.as_i64().unwrap() as u8;
-
-                                    // Send metadata request
-                                    magnet::send_metadata_request(&mut tcp_peer, ut_metadata_id)
-                                        .await?;
-                                }
-                            }
-                        } else {
-                            if let Some(split_idx) = find_bencode_dict_end(&payload) {
-                                let metadata_bytes = &payload[split_idx..];
-                                let info: torrent::Info =
-                                    serde_bencode::from_bytes(metadata_bytes)?;
-
-                                if let torrent::Keys::SingleFile { length } = info.keys {
-                                    println!("Length: {}", length);
-                                } else if let torrent::Keys::MultiFile { files } = info.keys {
-                                    let total_length: u64 = files.iter().map(|f| f.length).sum();
-                                    println!("Length: {}", total_length);
-                                }
-                                println!("Piece Length: {}", info.piece_length);
-                                println!("Piece Hashes:");
-                                for hash in info.pieces.chunks_exact(20).map(hex::encode) {
-                                    println!("{}", hash);
-                                }
-                                return Ok(());
-                            }
-                        }
-                    }
-                    Some(PeerMessage::Have(_)) => {}
-                    _ => {} // Ignore other messages
-                }
-            }
+            tokio::fs::write(output, piece_data).await?;
         }
     }
 
     Ok(())
-}
-
-fn find_bencode_dict_end(bytes: &[u8]) -> Option<usize> {
-    let mut depth = 0;
-    let mut i = 0;
-    while i < bytes.len() {
-        match bytes[i] {
-            b'd' | b'l' => {
-                depth += 1;
-                i += 1;
-            }
-            b'i' => {
-                i += 1;
-                while i < bytes.len() && bytes[i] != b'e' {
-                    i += 1;
-                }
-                i += 1;
-            }
-            b'e' => {
-                depth -= 1;
-                i += 1;
-                if depth == 0 {
-                    return Some(i);
-                }
-            }
-            b'0'..=b'9' => {
-                let mut len_str = String::new();
-                while i < bytes.len() && bytes[i] != b':' {
-                    len_str.push(bytes[i] as char);
-                    i += 1;
-                }
-                i += 1;
-                if let Ok(len) = len_str.parse::<usize>() {
-                    i += len;
-                } else {
-                    return None;
-                }
-            }
-            _ => return None,
-        }
-    }
-    None
 }

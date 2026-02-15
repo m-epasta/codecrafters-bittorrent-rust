@@ -34,10 +34,71 @@ pub fn decode(bytes: &[u8]) -> Result<Bencode, serde_bencode::Error> {
     serde_bencode::from_bytes(bytes)
 }
 
+pub fn find_dict_end(bytes: &[u8]) -> Option<usize> {
+    let mut depth = 0;
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'd' | b'l' => {
+                depth += 1;
+                i += 1;
+            }
+            b'i' => {
+                i += 1;
+                while i < bytes.len() && bytes[i] != b'e' {
+                    i += 1;
+                }
+                i += 1;
+            }
+            b'e' => {
+                depth -= 1;
+                i += 1;
+                if depth == 0 {
+                    return Some(i);
+                }
+            }
+            b'0'..=b'9' => {
+                let mut len_str = String::new();
+                while i < bytes.len() && bytes[i] != b':' {
+                    len_str.push(bytes[i] as char);
+                    i += 1;
+                }
+                i += 1;
+                if let Ok(len) = len_str.parse::<usize>() {
+                    i += len;
+                } else {
+                    return None;
+                }
+            }
+            _ => return None,
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn test_find_dict_end_simple() {
+        let data = b"d3:foo3:bare";
+        assert_eq!(find_dict_end(data), Some(12));
+    }
+
+    #[test]
+    fn test_find_dict_end_nested() {
+        let data = b"d1:md11:ut_metadatai16eee";
+        assert_eq!(find_dict_end(data), Some(25));
+    }
+
+    #[test]
+    fn test_find_dict_end_with_binary() {
+        let mut data = b"d1:v4:infoe".to_vec();
+        data.extend_from_slice(b"d1:ai1ee");
+        assert_eq!(find_dict_end(&data), Some(11));
+    }
 
     #[test]
     fn test_decode_integer() {

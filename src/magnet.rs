@@ -124,6 +124,55 @@ pub async fn send_extension_handshake(stream: &mut TcpStream) -> Result<()> {
     Ok(())
 }
 
+pub async fn fetch_info(link: &str) -> Result<crate::torrent::Info> {
+    let m = parse_magnet_link(link)?;
+    let peers = m.peers().await?;
+    let peer = peers.first().context("no peers found")?;
+
+    let mut tcp_peer = tokio::net::TcpStream::connect(format!("{}:{}", peer.ip, peer.port))
+        .await
+        .context("connect to peer")?;
+
+    let handshake =
+        crate::peer::Handshake::new(m.info_hash, rand::random::<[u8; 20]>()).with_extension();
+    handshake.write_to(&mut tcp_peer).await?;
+
+    let _response = crate::peer::Handshake::read_from(&mut tcp_peer).await?;
+
+    // Send extension handshake FIRST
+    send_extension_handshake(&mut tcp_peer).await?;
+
+    loop {
+        let message = crate::peer::PeerMessage::read_from(&mut tcp_peer).await?;
+
+        match message {
+            Some(crate::PeerMessage::Bitfield(_)) => {}
+            Some(crate::PeerMessage::Extended {
+                extended_id,
+                payload,
+            }) => {
+                if extended_id == 0 {
+                    let handshake_dict: serde_json::Value = serde_bencode::from_bytes(&payload)?;
+                    if let Some(m_dict) = handshake_dict.get("m") {
+                        if let Some(ut_id) = m_dict.get("ut_metadata") {
+                            let ut_metadata_id = ut_id.as_i64().unwrap() as u8;
+                            send_metadata_request(&mut tcp_peer, ut_metadata_id).await?;
+                        }
+                    }
+                } else {
+                    if let Some(split_idx) = crate::beencode::find_dict_end(&payload) {
+                        let metadata_bytes = &payload[split_idx..];
+                        let info: crate::torrent::Info = serde_bencode::from_bytes(metadata_bytes)?;
+                        return Ok(info);
+                    }
+                }
+            }
+            Some(crate::PeerMessage::Have(_)) => {}
+            _ => {}
+        }
+    }
+}
+
 #[derive(serde::Serialize)]
 struct MetadataRequest {
     msg_type: u8,

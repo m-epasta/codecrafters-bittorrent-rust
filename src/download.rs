@@ -133,8 +133,16 @@ pub async fn download_piece(
     piece_index: u32,
 ) -> anyhow::Result<Vec<u8>> {
     let t = Torrent::from_file(torrent_path)?;
+    download_piece_from_torrent(&t, tcp_peer, piece_index).await
+}
+
+pub async fn download_piece_from_torrent(
+    t: &Torrent,
+    tcp_peer: TcpStream,
+    piece_index: u32,
+) -> anyhow::Result<Vec<u8>> {
     let mut session = PeerSession::new(tcp_peer, t.info_hash()).await?;
-    session.download_piece(&t, piece_index).await
+    session.download_piece(t, piece_index).await
 }
 
 pub async fn download_all(
