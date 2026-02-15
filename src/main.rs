@@ -1,5 +1,6 @@
 use anyhow::Context;
 use clap::{Parser, Subcommand};
+use std::sync::Arc;
 use torrent::Torrent;
 
 use crate::peer::PeerMessage;
@@ -56,6 +57,12 @@ enum Commands {
         output: String,
         link: String,
         piece: u32,
+    },
+    #[command(name = "magnet_download")]
+    MagnetDownload {
+        #[arg(short)]
+        output: String,
+        link: String,
     },
 }
 
@@ -249,6 +256,17 @@ async fn main() -> anyhow::Result<()> {
                 .context("failed to download piece")?;
 
             tokio::fs::write(output, piece_data).await?;
+        }
+        Commands::MagnetDownload { output, link } => {
+            let info = magnet::fetch_info(&link).await?;
+            let m = magnet::parse_magnet_link(&link)?;
+
+            let t = Arc::new(torrent::Torrent {
+                announce: m.announce.clone(),
+                info,
+            });
+
+            crate::download::download_all_from_torrent(t, output, None).await?;
         }
     }
 
