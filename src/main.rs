@@ -161,6 +161,9 @@ async fn main() -> anyhow::Result<()> {
                 return Ok(());
             }
 
+            // Send extension handshake FIRST (as per BEP 10 "as soon as possible")
+            magnet::send_extension_handshake(&mut tcp_peer).await?;
+
             // Send an empty bitfield message
             PeerMessage::Bitfield(vec![])
                 .write_to(&mut tcp_peer)
@@ -171,8 +174,7 @@ async fn main() -> anyhow::Result<()> {
 
                 match message {
                     Some(PeerMessage::Bitfield(_pieces)) => {
-                        // After receiving a bitfield, we send an extension hanshake
-                        magnet::send_extension_handshake(&mut tcp_peer).await?;
+                        // Already sent our extension handshake
                     }
                     Some(PeerMessage::Extended {
                         extended_id,
